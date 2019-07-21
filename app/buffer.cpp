@@ -1,54 +1,70 @@
 #include "buffer.h"
 
-Buffer::Buffer () : buf(nullptr), len(0) { }
+#include <fstream>
+#include <memory>
 
-void Buffer::from_file (std::string fname, uint64_t size) {
-	if (!this->buf) {
-		// if we've loaded something before, clear the old buffer to load again.
-		this->buf.reset();
-		this->len = 0;
-	}
 
-	std::ifstream is (fname, std::ifstream::binary);
-	if (is) {
-		is.seekg(0, is.end);
-		uint64_t length = static_cast<uint64_t>(is.tellg()); // length of the whole file
-		if (!size) {
-			size = length;
-		} else {
-			// TODO #robustness: something better than this.
-			Q_ASSERT_X(size/8 <= length,
-			           "buffer::from_file",
-			           "tried to read beyond end of file.");
-			size /= 8;
-		}
-		is.seekg(length-size, is.beg);
+Buffer::Buffer (const char buf[], uint64_t len)
+	: buf(buf), len(len) {}
 
-		std::unique_ptr<char[]> buffer(new char[size]);
+Buffer::Buffer (std::unique_ptr<const char[]> buf, uint64_t len)
+	: buf(std::move(buf)), len(len) {}
 
-		is.read(buffer.get(), size);
+Buffer::Buffer (Buffer&& other)
+	: buf(std::move(other.buf)), len(other.len) {}
 
-		if (!is) {
-			throw std::runtime_error("error reading file " + fname + ".");
-		}
+Buffer& Buffer::operator= (Buffer&& other) {
+	buf = std::move(other.buf);
+	len = other.len;
+
+	return *this;
+}
+
+Buffer::~Buffer () {}
+
+Buffer Buffer::from_file (const std::string &filename, uint64_t size) {
+	std::ifstream is (filename, std::ifstream::binary);
+	if (!is)
+		throw std::runtime_error(
+			"couldn't read " + filename + " -- are you sure it exists?");
+
+	is.seekg(0, is.end);
+	uint64_t file_length = static_cast<uint64_t>(is.tellg());
+
+	if (size > file_length)
+		throw std::runtime_error("tried to read beyond end of file.");
+	if (!size)
+		size = file_length;
+
+	is.seekg(-size, is.end);
+
+	std::unique_ptr<char[]> data(new char[size]);
+	is.read(data.get(), size);
+
+	if (!is) {
 		is.close();
-
-		buf.swap(buffer);
-		this->len = size;
-	} else {
-		throw std::runtime_error("couldn't read " + fname + " -- are you sure it exists?");
+		throw std::runtime_error("error reading file " + filename + ".");
 	}
+
+	is.close();
+
+	return Buffer (std::move(data), size);
 }
 
 uint32_t Buffer::get (uint32_t start_bit, size_t num_bits) {
-	// TODO #robustness: some check that num_bits <= 32 (how to deal with
-	//                   failure?)
+	/* TODO #documentation: re: throws */
+	if (num_bits > 32)
+		throw std::runtime_error("Buffer::get can only read up to 32 bits -- tried to "
+		                         "read " + std::to_string(num_bits) + ".");
+
+	if (start_bit + num_bits > len * 8)
+		throw std::runtime_error("tried to read beyond end of buffer.");
+
 	uint32_t byte = start_bit / 8;
 	uint8_t  bit  = start_bit % 8;
 
 	if (bit + num_bits > 8) {
 		// want to read 'across' bytes, so must do in multiple stages.
-		// TODO #optimisation: make this iterative.
 		uint8_t available = 8 - bit;
 		uint32_t val = this->get(start_bit, available);
 		val = val << (num_bits - available);
@@ -66,7 +82,7 @@ uint32_t Buffer::get (size_t num_bits) {
 	return bits;
 }
 
-char* Buffer::get_buf () { return this->buf.get(); }
-uint64_t Buffer::get_len () { return this->len; }
-uint64_t Buffer::get_pos () { return this->pos; }
+const char* Buffer::get_buf () const { return this->buf.get(); }
+uint64_t Buffer::get_len () const { return this->len; }
+uint64_t Buffer::get_pos () const { return this->pos; }
 void Buffer::set_pos (uint64_t pos) { this->pos = pos; }
